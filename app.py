@@ -7,19 +7,25 @@ from google import genai
 from google.genai import types
 
 # ── API Key ───────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Gemini AI Chat", page_icon="🤖", layout="centered")
+
 GEMINI_API_KEY = ""
 try:
-    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-except:
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_API_KEY = str(st.secrets["GEMINI_API_KEY"]).strip()
+except Exception:
+    pass
 
-st.set_page_config(page_title="Gemini AI Chat", page_icon="🤖", layout="centered")
+if not GEMINI_API_KEY:
+    GEMINI_API_KEY = str(os.getenv("GEMINI_API_KEY", "")).strip()
 
 if not GEMINI_API_KEY:
     GEMINI_API_KEY = st.sidebar.text_input("🔑 Gemini API Key", type="password")
     if not GEMINI_API_KEY:
         st.warning("⚠️ Sidebar එකේ Gemini API Key paste කරන්න.")
         st.stop()
+
+# Strip any accidental quotes from secrets
+GEMINI_API_KEY = GEMINI_API_KEY.strip('"').strip("'")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
