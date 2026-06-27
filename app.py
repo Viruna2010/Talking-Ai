@@ -2,9 +2,9 @@ import os
 import asyncio
 import base64
 import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
-from audiorecorder import audiorecorder
 
 # ── API Key ───────────────────────────────────────────────────────────────────
 GEMINI_API_KEY = ""
@@ -13,7 +13,6 @@ try:
 except:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Gemini AI Chat", page_icon="🤖", layout="centered")
 
 if not GEMINI_API_KEY:
@@ -40,8 +39,8 @@ with st.sidebar:
 if "messages"      not in st.session_state: st.session_state.messages      = []
 if "audio_history" not in st.session_state: st.session_state.audio_history = []
 if "history"       not in st.session_state: st.session_state.history       = []
+if "audio_b64_input" not in st.session_state: st.session_state.audio_b64_input = ""
 
-# ── Title ─────────────────────────────────────────────────────────────────────
 st.title("🤖 Gemini AI Chat")
 st.caption("Powered by Gemini 2.5 Flash · Native Audio Dialog")
 st.divider()
@@ -61,7 +60,6 @@ if mode == "💬 Text Chat":
         st.session_state.history.append(
             types.Content(role="user", parts=[types.Part.from_text(text=user_input)])
         )
-
         with st.chat_message("user"):
             st.markdown(user_input)
 
@@ -83,21 +81,81 @@ if mode == "💬 Text Chat":
         st.session_state.messages.append({"role": "assistant", "content": reply})
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  VOICE CHAT
+#  VOICE CHAT — browser-native MediaRecorder (no pydub/pyaudioop needed)
 # ═══════════════════════════════════════════════════════════════════════════════
 else:
-    st.info("🎙️ Record button eka click කරලා කතා කරන්න.")
+    st.info("🎙️ Record button eka click කරලා කතා කරන්න. Gemini audio වලින් reply කරයි.")
 
-    audio = audiorecorder("🔴 Record", "⏹️ Stop")
+    # Browser records and returns base64 webm via query param trick using st.query_params
+    recorder_html = """
+    <style>
+      button { padding:12px 28px; font-size:1rem; border:none; border-radius:8px; cursor:pointer; }
+      #recBtn { background:#e84545; color:#fff; }
+      #recBtn.recording { background:#ff2222; }
+      #status { margin-top:8px; font-size:.9rem; color:#aaa; }
+    </style>
+    <button id="recBtn" onclick="toggle()">🔴 Record</button>
+    <div id="status">Button click කරන්න</div>
+    <script>
+      let recorder, chunks=[], recording=false;
+      async function toggle(){
+        if(!recording){
+          const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+          recorder = new MediaRecorder(stream);
+          chunks=[];
+          recorder.ondataavailable = e => chunks.push(e.data);
+          recorder.onstop = () => {
+            const blob = new Blob(chunks,{type:'audio/webm'});
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const b64 = reader.result.split(',')[1];
+              // Send to Streamlit via postMessage
+              window.parent.postMessage({type:'audio_b64', data: b64}, '*');
+            };
+            reader.readAsDataURL(blob);
+          };
+          recorder.start();
+          recording=true;
+          document.getElementById('recBtn').textContent='⏹️ Stop';
+          document.getElementById('recBtn').classList.add('recording');
+          document.getElementById('status').textContent='🔴 Recording...';
+        } else {
+          recorder.stop();
+          recorder.stream.getTracks().forEach(t=>t.stop());
+          recording=false;
+          document.getElementById('recBtn').textContent='🔴 Record';
+          document.getElementById('recBtn').classList.remove('recording');
+          document.getElementById('status').textContent='✅ Done — processing...';
+        }
+      }
+    </script>
+    """
 
-    if len(audio) > 0:
-        st.audio(audio.export().read(), format="audio/wav")
+    components.html(recorder_html, height=120)
+
+    # Receive audio via st.query_params workaround using a text_input hidden bridge
+    audio_input = st.text_input("audio_bridge", key="audio_bridge", label_visibility="collapsed")
+
+    st.markdown("""
+    <script>
+    window.addEventListener('message', function(e){
+      if(e.data && e.data.type==='audio_b64'){
+        const inputs = window.parent.document.querySelectorAll('input[data-testid="stTextInput"]');
+        inputs.forEach(i=>{
+          const nativeInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');
+          nativeInput.set.call(i, e.data.data);
+          i.dispatchEvent(new Event('input', {bubbles:true}));
+        });
+      }
+    });
+    </script>
+    """, unsafe_allow_html=True)
+
+    if audio_input and audio_input != st.session_state.audio_b64_input:
+        st.session_state.audio_b64_input = audio_input
 
         with st.spinner("🧠 Gemini processing..."):
-            wav_bytes = audio.export(format="wav").read()
-            b64_audio = base64.b64encode(wav_bytes).decode()
-
-            async def run_audio():
+            async def run_audio(b64):
                 config = types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
                     speech_config=types.SpeechConfig(
@@ -111,26 +169,25 @@ else:
                     contents=types.Content(
                         role="user",
                         parts=[types.Part.from_bytes(
-                            data=base64.b64decode(b64_audio),
-                            mime_type="audio/wav"
+                            data=base64.b64decode(b64),
+                            mime_type="audio/webm"
                         )]
                     ),
                     config=config,
                 )
-                out_audio_b64 = ""
-                transcript    = ""
+                out_b64, transcript = "", ""
                 for part in response.candidates[0].content.parts:
                     if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
-                        out_audio_b64 = base64.b64encode(part.inline_data.data).decode()
+                        out_b64 = base64.b64encode(part.inline_data.data).decode()
                     if hasattr(part, "text") and part.text:
                         transcript = part.text
-                return out_audio_b64, transcript
+                return out_b64, transcript
 
             try:
-                out_audio_b64, transcript = asyncio.run(run_audio())
+                out_b64, transcript = asyncio.run(run_audio(audio_input))
                 st.session_state.audio_history.append({
                     "transcript": transcript,
-                    "audio_b64":  out_audio_b64,
+                    "audio_b64": out_b64,
                 })
             except Exception as e:
                 st.error(f"❌ Error: {e}")
