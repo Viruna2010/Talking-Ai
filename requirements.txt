@@ -1,5 +1,0 @@
-streamlit
-google-genai
-streamlit-webrtc
-opencv-python
-av
