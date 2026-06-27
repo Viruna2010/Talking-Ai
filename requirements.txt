@@ -1,5 +1,4 @@
-streamlit==1.36.0
-streamlit-audiorecorder==0.0.5
-google-generativeai
+streamlit
+streamlit-audiorecorder
 google-genai
-pydub==0.25.1
+pydub
